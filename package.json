@@ -18,6 +18,7 @@
     "test:integration:watch": "jest test/integration --watch",
     "test:unit": "jest test/unit",
     "test:unit:watch": "jest test/unit --watch"
+    "test:coverage": "jest --coverage"
   },
   "engines": {
     "node": ">=8.9.3"
