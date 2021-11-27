@@ -1,0 +1,41 @@
+stages:
+  - test
+  - build
+
+Test Stage:
+  stage: test
+  environment:
+    name: $CI_COMMIT_REF_SLUG  
+  image: 
+    name: "public.ecr.aws/docker/library/node:latest"
+  script:
+    - |
+      npm install
+      npm run test:coverage 
+  allow_failure: true     
+
+build_docker_image:
+  stage: build
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  services:
+   - name: docker:dind
+     alias: thedockerhost
+  variables:
+    DOCKER_HOST: tcp://thedockerhost:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+
+  script:
+    - |
+      apk update
+      apk add python3 py3-pip
+      pip3 install awscli --upgrade
+      python3 -m pip install pip --upgrade
+      python3 -m pip install awscli
+
+    - docker build --tag $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js:$StageName_Lower .
+    - |
+#      LOGIN=`aws ecr --no-include-email get-login`
+#      eval $LOGIN
+    - docker push $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js:$StageName_Lower
