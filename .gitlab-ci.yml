@@ -1,18 +1,49 @@
 stages:
-  - test
+#  - test
+  - infra-build
   - build
+  - deploy
+#Adding to test
+#Test Stage:
+#  stage: test
+#  environment:
+#    name: $CI_COMMIT_REF_SLUG  
+#  image: 
+##    name: "public.ecr.aws/docker/library/node:latest"
+#     name: "public.ecr.aws/sam/build-nodejs14.x:latest"
+#  script:
+#    - |
+#      npm install
+#      npm run test:coverage 
+#  allow_failure: true     
 
-Test Stage:
-  stage: test
+Infrastructure Build Stage:
+  stage: infra-build
   environment:
-    name: $CI_COMMIT_REF_SLUG  
-  image: 
-    name: "public.ecr.aws/docker/library/node:latest"
+    name: $CI_COMMIT_REF_SLUG
+  services:
+   - name: docker:dind
+     alias: thedockerhost
+  variables:
+    DOCKER_HOST: tcp://thedockerhost:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+
   script:
     - |
-      npm install
-      npm run test:coverage 
-  allow_failure: true     
+      apk update
+      apk add python3 py3-pip
+      pip3 install awscli --upgrade
+      python3 -m pip install pip --upgrade
+      python3 -m pip install awscli
+      aws cloudformation create-stack --stack-name node-js-$ENV_NAME-deployment --template-body file://./ecs-cluster.yaml --capabilities CAPABILITY_NAMED_IAM
+      sleep 10
+      aws cloudformation create-stack --stack-name node-js-$ENV_NAME-ecr --template-body file://./ecr.yaml --parameters 'ParameterKey=EnvName,ParameterValue="'"$ENV_NAME"'"' 'ParameterKey=AccountId,ParameterValue="'"$ACCOUNT_ID"'"'
+#  when: manual
+  only:
+    variables:
+     - $CREATE_INFRA == "yes"
+
 
 build_docker_image:
   stage: build
@@ -34,9 +65,45 @@ build_docker_image:
       python3 -m pip install pip --upgrade
       python3 -m pip install awscli
 
-    - docker build --tag $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js:$StageName_Lower .
+    - docker build --tag $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-$ENV_NAME-repo:$StageName_Lower .
+    - docker tag $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-$ENV_NAME-repo:$StageName_Lower $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-$ENV_NAME-repo:latest
     - aws ecr get-login-password | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com
 #    - |
 #      LOGIN=`aws ecr --no-include-email get-login`
 #      eval $LOGIN
-    - docker push $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js:$StageName_Lower
+    - docker push $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-$ENV_NAME-repo:$StageName_Lower
+    - docker push $ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-$ENV_NAME-repo:latest
+
+
+
+Deploy the latest image:
+  stage: deploy
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  services:
+   - name: docker:dind
+     alias: thedockerhost
+  variables:
+    DOCKER_HOST: tcp://thedockerhost:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+
+  script:
+    - |
+      apk update
+      apk add python3 py3-pip jq
+      pip3 install awscli --upgrade
+      python3 -m pip install pip --upgrade
+      python3 -m pip install awscli
+      REPOSITORY_URL=$ACCOUNT_ID.dkr.ecr.$DEPLOYED_REGION.amazonaws.com/node-js-${ENV_NAME}-repo
+      IMAGE_TAG=latest
+      TASK_DEFINITION_NAME=node-js-$ENV_NAME-taskdf
+      CLUSTER_NAME=node-js-$ENV_NAME-cluster
+      SERVICE_NAME=Node-js-$ENV_NAME-service
+      TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$TASK_DEFINITION_NAME")
+      NEW_CONTAINER_DEFINTIION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$REPOSITORY_URL::$IMAGE_TAG" '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions[0]')
+      echo "Registering new container definition..."
+      aws ecs register-task-definition --family "${TASK_DEFINITION_NAME}" --container-definitions "${NEW_CONTAINER_DEFINTIION}" --memory 512
+      echo "Updating the service..."
+      aws ecs update-service --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}"  --task-definition "${TASK_DEFINITION_NAME}"
+  when: manual
